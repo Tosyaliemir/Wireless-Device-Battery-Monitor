@@ -1,4 +1,6 @@
 // Wireless Battery - tray app showing the battery level of wireless mice, headsets and Bluetooth devices.
+// Modified 2026-11-18 by Tosyaliemir (GPL-3.0 section 5a): added the `--json` command line option
+// (JsonToConsole below) for Momentum Kontrol. Nothing else is changed.
 #include <windows.h>
 #include <shellapi.h>
 #include <dbt.h>
@@ -907,9 +909,50 @@ int ListToConsole(bool dump) {
     return 0;
 }
 
+// `--json`: the same poll as `--list`, as one line of UTF-8 JSON for other programs (`--json --demo`: sample
+// devices). Never uses the network.
+std::string JsonText(const std::wstring& w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+    std::string u(n, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), u.data(), n, nullptr, nullptr);
+    std::string out = "\"";
+    for (unsigned char ch : u) {
+        if (ch == '"' || ch == '\\') { out += '\\'; out += (char)ch; }
+        else if (ch < 0x20) { char esc[8]; snprintf(esc, sizeof(esc), "\\u%04x", ch); out += esc; }
+        else out += (char)ch;
+    }
+    return out + "\"";
+}
+
+int JsonToConsole(bool demo) {
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (!out || out == INVALID_HANDLE_VALUE) {
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+    }
+    static const char* const kinds[] = {"other", "mouse", "headset", "keyboard", "gamepad", "phone"};
+    auto list = demo ? DemoDevices() : PollAllDevices();
+    std::string j = "[";
+    for (auto& s : list) {
+        int k = (int)s.kind;
+        char nums[160];
+        snprintf(nums, sizeof(nums), "\"percent\":%d,\"charging\":%s,\"asleep\":%s,\"connected\":%s,\"millivolts\":%d,\"graceSec\":%d,\"vid\":%u",
+                 s.percent, s.charging ? "true" : "false", s.asleep ? "true" : "false", s.connected ? "true" : "false",
+                 s.millivolts, s.graceSec, (unsigned)s.vid);
+        if (j.size() > 1) j += ",";
+        j += "{\"key\":" + JsonText(s.key) + ",\"name\":" + JsonText(s.name) + ",\"via\":" + JsonText(s.via) +
+             ",\"kind\":\"" + (k >= 0 && k < 6 ? kinds[k] : "other") + "\",\"levelText\":" + JsonText(s.levelText) +
+             ",\"detail\":" + JsonText(s.detail) + "," + nums + "}";
+    }
+    j += "]\n";
+    DWORD w;
+    if (out && out != INVALID_HANDLE_VALUE) WriteFile(out, j.data(), (DWORD)j.size(), &w, nullptr);
+    return 0;
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
+    if (cmdLine && wcsstr(cmdLine, L"--json")) return JsonToConsole(wcsstr(cmdLine, L"--demo") != nullptr);
     if (cmdLine && wcsstr(cmdLine, L"--list")) return ListToConsole(false);
     if (cmdLine && wcsstr(cmdLine, L"--dump")) return ListToConsole(true);
     if (cmdLine && wcsstr(cmdLine, L"--report")) {  // the "Request support for a device" window on its own
